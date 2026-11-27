@@ -44,3 +44,36 @@ agent it cannot share — the likely shape is a second copy of the agent image
 second agent rather than returning the loaded one).
 
 The fix belongs here, not in the bindings. The harness above is the test.
+
+## Where it faults (symbolized)
+
+```
+* thread #9, name = 'frida-agent-con', stop reason = EXC_BAD_ACCESS
+  frame #0: libsystem_pthread`pthread_rwlock_rdlock + 8
+  frame #1: frida-agent.dylib`g_type_from_name(name="GTlsBackendOpenssl")   gtype.c:3222
+  frame #2: frida-agent.dylib`g_type_register_static("GTlsBackendOpenssl")  gtype.c:2572
+  frame #4: frida-agent.dylib`g_tls_backend_openssl_register_type
+  frame #6: frida-agent.dylib`_frida_agent_environment_init                 agent-glue.c:77
+  frame #7: frida-agent.dylib`frida_agent_runner_create_and_run             agent.vala:124
+  frame #8: two-managers`frida_agent_container_run                         agent-container.vala:119
+```
+
+The second agent container re-runs `_frida_agent_environment_init` (gio_init,
+the OpenSSL GIO module registration) into a GLib whose type system was already
+torn down by the first container's deinit: `g_type_register_static` reaches
+`g_type_from_name` and takes a type-system rwlock that is no longer mapped.
+
+## Tried and eliminated
+- revert `a0b9b89a` (map the agent from memory): still faults.
+- frida-gum at 17.27.5: still faults.
+- `fa943cb3` (unload the agent before joining its thread): still faults.
+- init-once guard in `_frida_agent_environment_init` for all platforms, plus a
+  no-op `_frida_agent_environment_deinit`: still faults — so it is not the
+  re-init of one image, it is the next image meeting a GLib the previous one
+  shut down.
+
+## What is left
+Decide the lifetime: either the agent stays loaded for the process (and its
+GLib is never shut down between sessions), or each session gets an image of its
+own, as 17.27.5 did with a per-process temp directory — which is exactly what
+`2dd9ebd2` replaced with a shared resource directory.
