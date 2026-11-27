@@ -77,3 +77,18 @@ Decide the lifetime: either the agent stays loaded for the process (and its
 GLib is never shut down between sessions), or each session gets an image of its
 own, as 17.27.5 did with a per-process temp directory — which is exactly what
 `2dd9ebd2` replaced with a shared resource directory.
+
+## The fix
+
+`AgentResource` takes the session's temporary directory again, so the agent is
+written per session and each session loads its own image; the resource
+directory still holds the **helper**, which is stateless and shared safely.
+
+That is the lifetime rule the crash was breaking: an image whose GLib is shut
+down must not be reused. 17.27.5 got it for free from a per-process temp
+directory; `2dd9ebd2` moved the agent to the shared directory and kept the
+shutdown, so the next session's `gio_init`/`g_io_module_openssl_register` ran
+against a torn-down type system.
+
+With the fix, the harness runs three rounds without a fault (the exit still
+hangs in `frida_deinit()`, which 17.27.5's tree does too — unrelated).
