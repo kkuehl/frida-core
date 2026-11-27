@@ -135,13 +135,38 @@ namespace Frida {
 
 		private string? _path;
 
-		public AgentResource (string name, Bytes blob, string digest) {
+		/**
+		 * The session's own directory, when the agent belongs to a session.
+		 *
+		 * A process holds the agent image it loaded; if the session that loaded
+		 * it shuts the agent's GLib down, the image must go with it, or the next
+		 * session's init meets a GLib whose type system was already torn down and
+		 * faults (`g_type_register_static` → `g_type_from_name` on an unmapped
+		 * lock). One file per session means one image per session, which is what
+		 * 17.27.5 had with its per-process temp directory.
+		 */
+		private TemporaryDirectory? tempdir;
+
+		/** Kept alive: `~TemporaryFile` deletes the file when it is dropped. */
+		private TemporaryFile? file;
+
+		public AgentResource (string name, Bytes blob, string digest, TemporaryDirectory? tempdir = null) {
 			Object (name: name, blob: blob, digest: digest);
+			this.tempdir = tempdir;
 		}
 
 		public string get_path () throws Error {
-			if (_path == null)
-				_path = ResourceDirectory.open ({ name + " " + digest }).provide (name, blob, digest, 0755);
+			if (_path == null) {
+				var directory = tempdir;
+				if (directory != null) {
+					file = new TemporaryFile.from_stream (name,
+						new MemoryInputStream.from_data (blob.get_data (), null), directory);
+					FileUtils.chmod (file.path, 0755);
+					_path = file.path;
+				} else {
+					_path = ResourceDirectory.open ({ name + " " + digest }).provide (name, blob, digest, 0755);
+				}
+			}
 			return _path;
 		}
 	}
