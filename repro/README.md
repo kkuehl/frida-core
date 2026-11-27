@@ -92,3 +92,26 @@ against a torn-down type system.
 
 With the fix, the harness runs three rounds without a fault (the exit still
 hangs in `frida_deinit()`, which 17.27.5's tree does too — unrelated).
+
+## The exit hang is separate, and older
+
+The harness ends with `frida_deinit()` and that call blocks: `frida_deinit` →
+`gio_shutdown` → `_g_dbus_shutdown` waits on a condition for the `gdbus` worker
+thread, which stays alive in its own main loop because a `GDBusConnection` is
+still referenced after a local attach.
+
+Measured on the same harness, built against this tree:
+
+| tree | one round, then `frida_deinit()` |
+|---|---|
+| 17.27.5 | blocks (timeout) |
+| 17.28.0 + the per-session agent fix | blocks (timeout) |
+
+So it is **not** part of the 17.28.0 regression and not caused by the fix.
+Ordering (close the manager before releasing the device), holding the device,
+pumping the main context for 200 ms, 1.5 s and 3 s, and doing the work from
+inside a running `GMainLoop` all leave it blocking. `frida-python`'s
+`frida.shutdown()` returns, so it is the C-level teardown path and a separate
+ownership question (which object still holds the helper's connection).
+
+Nothing in frida-rust calls `frida_deinit`, so this does not affect the bump.
