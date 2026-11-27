@@ -115,3 +115,36 @@ inside a running `GMainLoop` all leave it blocking. `frida-python`'s
 ownership question (which object still holds the helper's connection).
 
 Nothing in frida-rust calls `frida_deinit`, so this does not affect the bump.
+
+## The exit hang is frida's own, not this harness's
+
+`frida-core-example.c` — the example the core devkit ships — attaches to itself
+(pid `0`), loads its script inside a `GMainLoop`, detaches and closes, and then
+**hangs the same way**:
+
+```
+[*] Unloaded
+on_detached: reason=FRIDA_SESSION_DETACH_REASON_APPLICATION_REQUESTED
+[*] Detached
+[*] Closed
+<blocks in frida_deinit>            (exit 124 under timeout)
+```
+
+So a well-formed host, with a running main loop and the example's own teardown,
+still blocks. Added to what the harness showed, the holders eliminated so far:
+
+- `DarwinHostSession.close()` and `DarwinHelperProcess.close()` both run, and
+  both objects are disposed;
+- `AgentEntry.close()` runs and the entry is finalized;
+- the helper's connection `close` (async and `close_sync`), and dropping
+  `proxy`/`connection`/`obtain_request`, change nothing;
+- pumping the default context for 200 ms, 1.5 s, 3 s, or doing the work inside a
+  running `GMainLoop`, changes nothing;
+- `frida_init` + `frida_deinit` with no manager is clean, and so is a manager
+  with devices but no attach.
+
+`frida_deinit` → `gio_shutdown` → `_g_dbus_shutdown` (gdbusprivate.c:2117) waits
+for the shared GDBus worker, which exits only when the last `GDBusConnection`
+object is freed. A breakpoint at `_g_dbus_shutdown` is reachable in a debug
+build, so the next step is to read `gdbus_shared_thread_ref_count` there and walk
+who still holds a connection.
