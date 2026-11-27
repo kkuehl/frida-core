@@ -148,3 +148,25 @@ for the shared GDBus worker, which exits only when the last `GDBusConnection`
 object is freed. A breakpoint at `_g_dbus_shutdown` is reachable in a debug
 build, so the next step is to read `gdbus_shared_thread_ref_count` there and walk
 who still holds a connection.
+
+## Chasing the exit hang: what the last round showed
+
+- The **agent's** environment deinit completes (`before`/`after gio_shutdown`
+  both print), so the agent is not the one blocking.
+- The block is the **host's** `_g_dbus_shutdown`: disassembly shows it waiting
+  on a condition for `gdbus_shared_thread_data->shared_thread` to become NULL,
+  i.e. for the shared worker to exit — which happens only when the last
+  `GDBusConnection` is freed. The `refcount == 1` assertion right after is
+  glib's own expectation that this is the last reference.
+- The host's agent connection **never emits `closed`**: a print in
+  `on_agent_connection_closed` never runs, even though `AgentEntry.close()`
+  runs and the entry is finalized.
+- Closing it with a `null` cancellable instead of the teardown's
+  (already-cancelled) one does not change that — the close still never lands.
+
+So the next question is narrower than before: why does
+`DBusConnection.close()` on the host's server-side agent connection never
+complete? Candidates: an `io_cancellable` that is cancelled before the async
+close is dispatched, the connection being closed while its message processing
+is still pending, or the agent's end disappearing before the close is sent.
+
